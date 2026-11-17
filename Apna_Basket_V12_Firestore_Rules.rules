@@ -6,10 +6,15 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isAdmin() {
+    function isOwnerAdmin() {
       return signedIn()
-        && request.auth.uid == "oGx22qVkoeOboM1bNAgIdKTqXY12"
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
+        && request.auth.uid == "oGx22qVkoeOboM1bNAgIdKTqXY12";
+    }
+
+    // The owner UID is the authority. Do not rely on a client-editable
+    // users/{uid}.role field to grant administrator privileges.
+    function isAdmin() {
+      return isOwnerAdmin();
     }
 
     function validMoneyFields(d) {
@@ -67,10 +72,63 @@ service cloud.firestore {
         );
     }
 
+    function validOrderStatus(s) {
+      return s in ["Pending", "Confirmed", "Processing", "Shipped", "Delivered", "Cancelled"];
+    }
+
+    function validAdminOrderUpdate() {
+      return isAdmin()
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(["status", "adminNote", "updatedAt", "approvedAt", "approvedBy"])
+        && request.resource.data.status is string
+        && validOrderStatus(request.resource.data.status)
+        && (
+          !("adminNote" in request.resource.data)
+          || (request.resource.data.adminNote is string
+            && request.resource.data.adminNote.size() <= 500)
+        )
+        && (
+          !("updatedAt" in request.resource.data)
+          || request.resource.data.updatedAt is timestamp
+        )
+        && (
+          !("approvedAt" in request.resource.data)
+          || request.resource.data.approvedAt is timestamp
+        )
+        && (
+          !("approvedBy" in request.resource.data)
+          || request.resource.data.approvedBy == request.auth.uid
+        );
+    }
+
     match /users/{uid} {
+      // A user can read their own profile, but cannot write role/admin fields.
       allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
       allow list: if isAdmin();
-      allow create, update, delete: if isAdmin();
+
+      allow create: if isAdmin()
+        || (signedIn()
+          && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly([
+            "uid", "name", "email", "phone", "createdAt"
+          ])
+          && request.resource.data.uid == uid);
+
+      allow update: if isAdmin()
+        || (signedIn()
+          && request.auth.uid == uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(["name", "phone", "address", "photoURL", "updatedAt"])
+          && (!("name" in request.resource.data)
+            || (request.resource.data.name is string
+              && request.resource.data.name.size() <= 100))
+          && (!("phone" in request.resource.data)
+            || (request.resource.data.phone is string
+              && request.resource.data.phone.size() <= 20)));
+
+      allow delete: if isAdmin();
     }
 
     match /products/{productId} {
@@ -88,8 +146,11 @@ service cloud.firestore {
       allow create: if validNewOrder(orderId);
       allow get: if isAdmin()
         || (signedIn() && resource.data.userId == request.auth.uid);
-      allow list: if isAdmin();
-      allow update, delete: if isAdmin();
+      // Customer list queries must include userId == request.auth.uid.
+      allow list: if isAdmin()
+        || (signedIn() && resource.data.userId == request.auth.uid);
+      allow update: if validAdminOrderUpdate();
+      allow delete: if isAdmin();
     }
 
     match /coupons/{couponId} {
