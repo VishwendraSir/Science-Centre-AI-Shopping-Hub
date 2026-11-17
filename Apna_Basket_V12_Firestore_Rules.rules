@@ -1,68 +1,84 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() {
-      return request.auth != null;
-    }
-
+    function signedIn() { return request.auth != null; }
     function isAdmin() {
       return signedIn()
         && request.auth.uid == "oGx22qVkoeOboM1bNAgIdKTqXY12"
         && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
     }
-
-    function isOwner(uid) {
-      return signedIn() && request.auth.uid == uid;
+    function validMoneyFields(d) {
+      return d.subtotalPaise is int
+        && d.deliveryFeePaise is int
+        && d.discountPaise is int
+        && d.totalPaise is int
+        && d.subtotalPaise >= 0
+        && d.deliveryFeePaise >= 0
+        && d.discountPaise >= 0
+        && d.discountPaise <= d.subtotalPaise
+        && d.totalPaise == d.subtotalPaise + d.deliveryFeePaise - d.discountPaise;
     }
-
-    match /users/{uid} {
-      allow read: if isOwner(uid) || isAdmin();
-      allow create, update, delete: if isAdmin();
-    }
-
-    match /products/{productId} {
-      allow read: if isAdmin() || resource.data.active == true;
-      allow create, update, delete: if isAdmin();
-    }
-
-    match /settings/{settingsId} {
-      allow read: if settingsId == "main";
-      allow create, update, delete: if isAdmin();
-    }
-
-    match /orders/{orderId} {
-      allow create: if signedIn()
-        && request.resource.data.userId == request.auth.uid
+    function validNewOrder(orderId) {
+      return signedIn()
+        && request.resource.data.keys().hasAll([
+          "id", "userId", "name", "phone", "address", "pincode",
+          "status", "subtotalPaise", "deliveryFeePaise", "discountPaise",
+          "totalPaise", "items", "payment", "date", "note"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "id", "userId", "name", "phone", "address", "pincode",
+          "status", "subtotalPaise", "deliveryFeePaise", "discountPaise",
+          "totalPaise", "items", "payment", "date", "note", "couponCode"
+        ])
         && request.resource.data.id == orderId
+        && request.resource.data.userId == request.auth.uid
         && request.resource.data.status == "Pending"
         && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 100
         && request.resource.data.phone is string
+        && request.resource.data.phone.size() >= 10
+        && request.resource.data.phone.size() <= 20
         && request.resource.data.address is string
+        && request.resource.data.address.size() > 0
+        && request.resource.data.address.size() <= 500
         && request.resource.data.pincode is string
+        && request.resource.data.pincode.matches('^[0-9]{6}$')
         && request.resource.data.items is list
         && request.resource.data.items.size() > 0
-        && request.resource.data.subtotalPaise is int
-        && request.resource.data.deliveryFeePaise is int
-        && request.resource.data.discountPaise is int
-        && request.resource.data.totalPaise is int
-        && request.resource.data.subtotalPaise >= 0
-        && request.resource.data.deliveryFeePaise >= 0
-        && request.resource.data.discountPaise >= 0
-        && request.resource.data.totalPaise >= 0
-        && request.resource.data.keys().hasOnly([
-          "id", "userId", "name", "phone", "address", "pincode", "status",
-          "subtotalPaise", "deliveryFeePaise", "totalPaise", "items",
-          "payment", "date", "note", "discountPaise", "couponCode"
-        ]);
+        && request.resource.data.items.size() <= 50
+        && request.resource.data.payment in ["UPI", "Cash on Delivery"]
+        && request.resource.data.date is timestamp
+        && request.resource.data.note is string
+        && request.resource.data.note.size() <= 300
+        && validMoneyFields(request.resource.data)
+        && (!("couponCode" in request.resource.data)
+          || (request.resource.data.couponCode is string
+            && request.resource.data.couponCode.size() <= 40));
+    }
+    match /users/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+    match /products/{productId} {
+      allow get, list: if isAdmin() || resource.data.active == true;
+      allow create, update, delete: if isAdmin();
+    }
+    match /settings/{settingsId} {
+      allow get: if settingsId == "main";
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+    match /orders/{orderId} {
+      allow create: if validNewOrder(orderId);
       allow get: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
       allow list: if isAdmin();
       allow update, delete: if isAdmin();
     }
-
     match /coupons/{couponId} {
       allow read, write: if isAdmin();
     }
-
     match /{document=**} {
       allow read, write: if false;
     }
