@@ -73,7 +73,7 @@ service cloud.firestore {
     }
 
     function validOrderStatus(s) {
-      return s in ["Pending", "Confirmed", "Processing", "Shipped", "Delivered", "Cancelled"];
+      return s in ["Pending", "Accepted", "Preparing", "Ready", "Out for Delivery", "Delivered", "Rejected", "Cancelled", "Confirmed", "Processing", "Shipped"];
     }
 
     function validAdminOrderUpdate() {
@@ -81,7 +81,7 @@ service cloud.firestore {
         && request.resource.data.id == resource.data.id
         && request.resource.data.userId == resource.data.userId
         && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(["status", "adminNote", "updatedAt", "approvedAt", "approvedBy"])
+          .hasOnly(["status", "adminNote", "updatedAt", "approvedAt", "approvedBy", "verifiedSubtotalPaise", "verifiedDiscountPaise", "verifiedTotalPaise", "rejectionReason", "rejectedAt", "rejectedBy"])
         && request.resource.data.status is string
         && validOrderStatus(request.resource.data.status)
         && (
