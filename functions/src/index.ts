@@ -16,13 +16,13 @@ function requireSignedIn(request: { auth?: { uid: string } | null }): string {
   return request.auth.uid;
 }
 
-function requireOwner(request: { auth?: { uid: string; token: Record<string, unknown> } | null }): string {
+export function requireOwner(request: { auth?: { uid: string; token: Record<string, unknown> } | null }): string {
   const uid = requireSignedIn(request);
   if (uid !== OWNER_UID) throw new HttpsError("permission-denied", "यह कार्य केवल अधिकृत Owner कर सकता है।");
   return uid;
 }
 
-function parseCart(value: unknown): CartLine[] {
+export function parseCart(value: unknown): CartLine[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 50) {
     throw new HttpsError("invalid-argument", "Cart में 1 से 50 items होने चाहिए।");
   }
