@@ -72,6 +72,12 @@ test("quoteCustomerOrder calculates totals from server-side product price", asyn
   assert.equal(result.items[0].unitPricePaise, 12345);
 });
 
+test("quoteCustomerOrder rejects total when delivery fee causes safe-integer overflow", async () => {
+  await seedConfig({ deliveryFeePaise: Number.MAX_SAFE_INTEGER, minimumOrderPaise: 0 });
+  await productRef.set({ name: "Milk", active: true, pricePaise: 500 });
+  await expectCode(callQuote({ items: [{ productId: "emulator-milk", quantity: 1 }], pincode: "282001" }), "invalid-argument");
+});
+
 test.after(async () => {
   await reset();
   await db.terminate();
