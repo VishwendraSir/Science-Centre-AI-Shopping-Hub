@@ -30,7 +30,11 @@ export function parseCart(value: unknown): CartLine[] {
     if (typeof item.quantity !== "number" || !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 99) {
       throw new SecurityValidationError("invalid-argument", "Quantity 1 से 99 के बीच पूर्ण संख्या होनी चाहिए।");
     }
-    merged.set(item.productId, (merged.get(item.productId) ?? 0) + item.quantity);
+    const combined = (merged.get(item.productId) ?? 0) + item.quantity;
+    if (!Number.isSafeInteger(combined) || combined > 99) {
+      throw new SecurityValidationError("invalid-argument", "एक product की कुल Quantity 99 से अधिक नहीं हो सकती।");
+    }
+    merged.set(item.productId, combined);
   }
   return [...merged].map(([productId, quantity]) => ({ productId, quantity }));
 }
