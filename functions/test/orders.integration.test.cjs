@@ -65,6 +65,16 @@ test("createCustomerOrder enforces auth and creates a server-priced idempotent P
 });
 
 
+
+test("same idempotency request returns original order even after product changes", async () => {
+  await seed();
+  const first = await create("idem-key-stable-001", 1);
+  await productRef.update({ active: false, pricePaise: 15000 });
+  const retry = await create("idem-key-stable-001", 1);
+  assert.equal(retry.reused, true);
+  assert.equal(retry.orderId, first.orderId);
+});
+
 test("idempotency key cannot be reused for a different order payload", async () => {
   await seed();
   const first = await create("idem-key-payload-01", 1);
