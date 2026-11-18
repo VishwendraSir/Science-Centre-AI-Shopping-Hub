@@ -109,6 +109,20 @@ test("rejectOrder and setOrderStatus enforce Owner and legal transitions", async
   await expectCode(setOrderStatus.run({ auth: owner, data: { orderId: accepted.orderId, status: "Preparing" } }), "failed-precondition");
 });
 
+
+test("approveOrder rejects malformed legacy quantities without changing stock", async () => {
+  await seed(5);
+  const ref = db.collection("orders").doc("malformed-legacy-order");
+  await ref.set({
+    id: ref.id, userId: CUSTOMER_UID, status: "Pending",
+    items: [{ productId: "orders-test-product", quantity: -2 }]
+  });
+  orderIds.add(ref.id);
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId: ref.id } }), "failed-precondition");
+  assert.equal((await productRef.get()).data().stock, 5);
+  assert.equal((await ref.get()).data().status, "Pending");
+});
+
 test.after(async () => {
   await cleanup();
   await db.terminate();
