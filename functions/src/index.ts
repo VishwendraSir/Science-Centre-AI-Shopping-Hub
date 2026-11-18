@@ -84,16 +84,26 @@ export const createCustomerOrder = onCall({ enforceAppCheck: false }, async requ
   const note = typeof request.data?.note === "string" ? request.data.note.slice(0, 300) : "";
   const idempotencyKey = cleanText(request.data?.idempotencyKey, "Idempotency key", 80);
   if (!/^[A-Za-z0-9_-]{12,80}$/.test(idempotencyKey)) throw new HttpsError("invalid-argument", "Idempotency key गलत है।");
-  const quote = await buildQuote(request.data?.items, request.data?.pincode);
-  // Bind an idempotency key to the complete normalized order intent, not merely to a UID.
+  let normalizedCart;
+  try { normalizedCart = parseCart(request.data?.items); } catch (error) { asHttpsError(error); }
+  const pincode = cleanText(request.data?.pincode, "PIN code", 6, 6);
+  // Fingerprint the customer's normalized intent, not a mutable product price or availability snapshot.
   const fingerprintPayload = {
-    uid, name, phone, address, payment, note, pincode: quote.pincode,
-    items: quote.items.map(({ productId, quantity, unitPricePaise }) => ({ productId, quantity, unitPricePaise }))
-      .sort((a, b) => a.productId.localeCompare(b.productId))
+    uid, name, phone, address, payment, note, pincode,
+    items: normalizedCart!.slice().sort((a, b) => a.productId.localeCompare(b.productId))
   };
   const requestFingerprint = createHash("sha256").update(JSON.stringify(fingerprintPayload)).digest("hex");
-  const orderRef = db.collection("orders").doc();
   const idemRef = db.doc(`orderRequests/${uid}_${idempotencyKey}`);
+  const priorSnapshot = await idemRef.get();
+  if (priorSnapshot.exists) {
+    const priorData = priorSnapshot.data()!;
+    if (priorData.requestFingerprint !== requestFingerprint) {
+      throw new HttpsError("already-exists", "यह Idempotency key किसी दूसरे Order request के लिए उपयोग हो चुकी है। नया key बनाकर दोबारा प्रयास करें।");
+    }
+    return { orderId: priorData.orderId, reused: true };
+  }
+  const quote = await buildQuote(normalizedCart, pincode);
+  const orderRef = db.collection("orders").doc();
   return db.runTransaction(async tx => {
     const prior = await tx.get(idemRef);
     if (prior.exists) {
