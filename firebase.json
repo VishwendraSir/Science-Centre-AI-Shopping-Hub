@@ -1,0 +1,4 @@
+{
+  "firestore": { "rules": "Apna_Basket_V12_Firestore_Rules.rules" },
+  "emulators": { "firestore": { "port": 8080 }, "ui": { "enabled": false }, "singleProjectMode": true }
+}
