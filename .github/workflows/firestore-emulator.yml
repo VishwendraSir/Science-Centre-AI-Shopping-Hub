@@ -1,0 +1,30 @@
+name: Firestore Emulator Security Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Apna_Basket_V12_Firestore_Rules.rules'
+      - 'test/**'
+      - 'firebase.json'
+      - 'package.json'
+      - '.github/workflows/firestore-emulator.yml'
+  push:
+    branches: [security/emulator-18-rules]
+
+jobs:
+  firestore-rules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm install
+      - name: Run Firestore Emulator tests
+        run: npm run test:rules
