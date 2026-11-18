@@ -60,7 +60,9 @@ async function buildQuote(itemsInput: unknown, pincodeInput: unknown) {
     return { productId: line.productId, name: String(product.name ?? "Product").slice(0, 120), quantity: line.quantity, unitPricePaise, lineTotalPaise };
   });
   if (subtotalPaise < minimumOrderPaise) throw new HttpsError("failed-precondition", "Minimum order amount पूरा नहीं हुआ।");
-  return { items, pincode, subtotalPaise, deliveryFeePaise, discountPaise: 0, totalPaise: subtotalPaise + deliveryFeePaise };
+  const totalPaise = subtotalPaise + deliveryFeePaise;
+  if (!Number.isSafeInteger(totalPaise)) throw new HttpsError("invalid-argument", "Order total सीमा से अधिक है।");
+  return { items, pincode, subtotalPaise, deliveryFeePaise, discountPaise: 0, totalPaise };
 }
 
 export const quoteCustomerOrder = onCall({ enforceAppCheck: false }, async request => {
