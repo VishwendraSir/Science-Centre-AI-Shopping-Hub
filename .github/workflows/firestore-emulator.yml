@@ -43,3 +43,5 @@ jobs:
         run: npm install --prefix functions
       - name: Compile Functions TypeScript
         run: npm --prefix functions run build
+      - name: Run Functions security unit tests
+        run: npm --prefix functions test
