@@ -45,3 +45,5 @@ jobs:
         run: npm --prefix functions run build
       - name: Run Functions security unit tests
         run: npm --prefix functions test
+      - name: Run callable handler integration tests with Firestore Emulator
+        run: npm run test:functions:emulator
