@@ -93,7 +93,7 @@ export const createCustomerOrder = onCall({ enforceAppCheck: false }, async requ
     tx.create(orderRef, {
       id: orderRef.id, userId: uid, name, phone, address, pincode: quote.pincode,
       status: "Pending", subtotalPaise: quote.subtotalPaise, deliveryFeePaise: quote.deliveryFeePaise,
-      discountPaise: 0, totalPaise: quote.totalPaise, items: quote.items.map(({ productId, name: productName, quantity }) => ({ productId, name: productName, quantity })),
+      discountPaise: 0, totalPaise: quote.totalPaise, items: quote.items.map(({ productId, name: productName, quantity, unitPricePaise, lineTotalPaise }) => ({ productId, name: productName, quantity, unitPricePaise, lineTotalPaise })),
       payment, date: Timestamp.now(), note, createdBy: uid
     });
     tx.create(idemRef, { orderId: orderRef.id, createdAt: Timestamp.now() });
@@ -120,7 +120,15 @@ export const approveOrder = onCall({ enforceAppCheck: false }, async request => 
     for (let i = 0; i < approvedItems.length; i++) {
       const item = approvedItems[i], snap = snaps[i];
       if (!snap.exists || snap.data()!.active !== true) throw new HttpsError("failed-precondition", "Order का कोई product उपलब्ध नहीं है।");
-      const stock = snap.data()!.stock;
+      const product = snap.data()!;
+      const stock = product.stock;
+      const unitPricePaise = productPricePaise(product);
+      const storedItem = order.items.find((line: any) => line.productId === item.productId);
+      if (!storedItem || !Number.isSafeInteger(storedItem.unitPricePaise) || !Number.isSafeInteger(storedItem.lineTotalPaise)
+        || storedItem.unitPricePaise !== unitPricePaise
+        || storedItem.lineTotalPaise !== unitPricePaise * item.quantity) {
+        throw new HttpsError("failed-precondition", "Product की कीमत बदल गई है या Order price snapshot गलत है; दोबारा Quote बनाएं।");
+      }
       if (!Number.isSafeInteger(stock) || stock < item.quantity) throw new HttpsError("failed-precondition", "पर्याप्त stock उपलब्ध नहीं है।");
       decrements.push({ ref: refs[i], stock: stock - item.quantity });
     }
