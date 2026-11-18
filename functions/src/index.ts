@@ -140,6 +140,13 @@ export const approveOrder = onCall({ enforceAppCheck: false }, async request => 
     if (order.payment === "UPI" && !(order.paymentVerified === true && order.paymentStatus === "Verified")) {
       throw new HttpsError("failed-precondition", "Trusted payment provider से UPI payment verify होने तक Order approve नहीं हो सकता।");
     }
+    if (order.payment === "Cash on Delivery"
+      && !(order.paymentVerified === false && order.paymentStatus === "PendingCollection")) {
+      throw new HttpsError("failed-precondition", "Cash on Delivery payment state गलत है; approval रोक दिया गया।");
+    }
+    if (!["UPI", "Cash on Delivery"].includes(order.payment)) {
+      throw new HttpsError("failed-precondition", "Order payment method मान्य नहीं है; approval रोक दिया गया।");
+    }
     let approvedItems;
     try { approvedItems = parseCart(order.items); }
     catch { throw new HttpsError("failed-precondition", "Order items गलत हैं; approval रोक दिया गया।"); }
