@@ -68,7 +68,9 @@ service cloud.firestore {
 
     match /products/{productId} {
       allow get, list: if owner() || resource.data.active == true;
-      allow create, update, delete: if owner();
+      allow create: if owner();
+      allow update: if owner() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(["stock"]);
+      allow delete: if owner();
     }
     match /orders/{orderId} {
       allow create: if validNewOrder(orderId);
