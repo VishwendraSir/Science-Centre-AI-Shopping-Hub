@@ -35,3 +35,8 @@ test("requireOwner denies non-owner even with admin-looking claims", () => {
 test("requireOwner allows the exact configured Owner UID", () => {
   assert.equal(requireOwner({ auth: { uid: OWNER_UID, token: {} } }), OWNER_UID);
 });
+
+const { getFirestore } = require("firebase-admin/firestore");
+test.after(async () => {
+  await getFirestore().terminate();
+});
