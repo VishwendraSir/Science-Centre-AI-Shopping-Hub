@@ -117,7 +117,10 @@ export const createCustomerOrder = onCall({ enforceAppCheck: false }, async requ
       id: orderRef.id, userId: uid, name, phone, address, pincode: quote.pincode,
       status: "Pending", subtotalPaise: quote.subtotalPaise, deliveryFeePaise: quote.deliveryFeePaise,
       discountPaise: 0, totalPaise: quote.totalPaise, items: quote.items.map(({ productId, name: productName, quantity, unitPricePaise, lineTotalPaise }) => ({ productId, name: productName, quantity, unitPricePaise, lineTotalPaise })),
-      payment, date: Timestamp.now(), note, createdBy: uid
+      payment,
+      paymentStatus: payment === "UPI" ? "Unverified" : "PendingCollection",
+      paymentVerified: false,
+      date: Timestamp.now(), note, createdBy: uid
     });
     tx.create(idemRef, { orderId: orderRef.id, requestFingerprint, createdAt: Timestamp.now() });
     return { orderId: orderRef.id, reused: false };
