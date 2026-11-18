@@ -109,12 +109,14 @@ export const approveOrder = onCall({ enforceAppCheck: false }, async request => 
     if (!orderSnap.exists) throw new HttpsError("not-found", "Order नहीं मिला।");
     const order = orderSnap.data()!;
     if (order.status !== "Pending") throw new HttpsError("failed-precondition", "केवल Pending Order approve हो सकता है।");
-    if (!Array.isArray(order.items) || !order.items.length) throw new HttpsError("failed-precondition", "Order items गलत हैं।");
-    const refs = order.items.map((item: any) => db.doc(`products/${item.productId}`));
+    let approvedItems;
+    try { approvedItems = parseCart(order.items); }
+    catch { throw new HttpsError("failed-precondition", "Order items गलत हैं; approval रोक दिया गया।"); }
+    const refs = approvedItems.map((item: { productId: string; quantity: number }) => db.doc(`products/${item.productId}`));
     const snaps = await Promise.all(refs.map((ref: FirebaseFirestore.DocumentReference) => tx.get(ref)));
     const decrements: Array<{ref: FirebaseFirestore.DocumentReference; stock: number}> = [];
-    for (let i = 0; i < order.items.length; i++) {
-      const item = order.items[i], snap = snaps[i];
+    for (let i = 0; i < approvedItems.length; i++) {
+      const item = approvedItems[i], snap = snaps[i];
       if (!snap.exists || snap.data()!.active !== true) throw new HttpsError("failed-precondition", "Order का कोई product उपलब्ध नहीं है।");
       const stock = snap.data()!.stock;
       if (!Number.isSafeInteger(stock) || stock < item.quantity) throw new HttpsError("failed-precondition", "पर्याप्त stock उपलब्ध नहीं है।");
