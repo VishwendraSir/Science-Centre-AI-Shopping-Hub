@@ -39,6 +39,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Install root dependencies (Firebase CLI)
+        run: npm install
       - name: Install Functions dependencies
         run: npm install --prefix functions
       - name: Compile Functions TypeScript
