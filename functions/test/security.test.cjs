@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { HttpsError } = require("firebase-functions/v2/https");
-const { parseCart, requireOwner } = require("../lib/index.js");
+const { parseCart, requireOwner } = require("../lib/security.js");
 
 const OWNER_UID = "oGx22qVkoeOboM1bNAgIdKTqXY12";
 const errCode = (fn, code) => assert.throws(fn, (error) => error instanceof HttpsError && error.code === code);
@@ -36,7 +36,3 @@ test("requireOwner allows the exact configured Owner UID", () => {
   assert.equal(requireOwner({ auth: { uid: OWNER_UID, token: {} } }), OWNER_UID);
 });
 
-const { getFirestore } = require("firebase-admin/firestore");
-test.after(async () => {
-  await getFirestore().terminate();
-});
