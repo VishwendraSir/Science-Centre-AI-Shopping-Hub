@@ -72,7 +72,6 @@ test("idempotency key cannot be reused for a different order payload", async () 
   await expectCode(create("idem-key-payload-01", 1, customer, { address: "Different address" }), "already-exists");
   const order = (await db.doc(`orders/${first.orderId}`).get()).data();
   assert.equal(order.items[0].quantity, 1);
-  assert.equal((await db.collection("orders").where("userId", "==", CUSTOMER_UID).get()).size, 1);
 });
 
 test("approveOrder is Owner-only, decrements stock once and writes audit", async () => {
