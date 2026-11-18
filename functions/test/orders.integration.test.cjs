@@ -61,10 +61,22 @@ test("createCustomerOrder enforces auth and creates a server-priced idempotent P
   assert.equal(order.userId, CUSTOMER_UID);
   assert.equal(order.subtotalPaise, 20000);
   assert.equal(order.totalPaise, 22500);
+  assert.equal(order.paymentStatus, "PendingCollection");
+  assert.equal(order.paymentVerified, false);
   assert.deepEqual(order.items, [{ productId: "orders-test-product", name: "Test Product", quantity: 2, unitPricePaise: 10000, lineTotalPaise: 20000 }]);
 });
 
 
+
+
+test("UPI order is explicitly unverified until trusted payment verification exists", async () => {
+  await seed();
+  const result = await create("idem-key-upi-0001", 1, customer, { payment: "UPI" });
+  const order = (await db.doc(`orders/${result.orderId}`).get()).data();
+  assert.equal(order.payment, "UPI");
+  assert.equal(order.paymentStatus, "Unverified");
+  assert.equal(order.paymentVerified, false);
+});
 
 test("same idempotency request returns original order even after product changes", async () => {
   await seed();
