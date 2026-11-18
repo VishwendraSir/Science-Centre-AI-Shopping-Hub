@@ -1,5 +1,6 @@
 import { initializeApp } from "firebase-admin/app";
-import { getFirestore, Timestamp } from "firebase-admin/firestore";
+import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
+import { randomUUID } from "node:crypto";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { setGlobalOptions } from "firebase-functions/v2";
 import { parseCart, requireOwner, SecurityValidationError } from "./security";
@@ -8,52 +9,46 @@ function asHttpsError(error: unknown): never {
   if (error instanceof SecurityValidationError) throw new HttpsError(error.code as any, error.message);
   throw error;
 }
-
 initializeApp();
 const db = getFirestore();
 setGlobalOptions({ region: "asia-south1", maxInstances: 5 });
 
 function productPricePaise(data: FirebaseFirestore.DocumentData): number {
   if (Number.isSafeInteger(data.pricePaise) && data.pricePaise > 0) return data.pricePaise;
-  // Temporary legacy compatibility: V13 stores price in rupees. Convert once to integer paise.
   if (typeof data.price === "number" && Number.isFinite(data.price) && data.price > 0) {
     const paise = Math.round(data.price * 100);
     if (Number.isSafeInteger(paise) && paise > 0) return paise;
   }
   throw new HttpsError("failed-precondition", "Product की server-side कीमत उपलब्ध नहीं है।");
 }
+function cleanText(value: unknown, field: string, max: number, min = 1): string {
+  if (typeof value !== "string" || value.trim().length < min || value.trim().length > max) {
+    throw new HttpsError("invalid-argument", field + " गलत है।");
+  }
+  return value.trim();
+}
+function safeMoney(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) throw new HttpsError("failed-precondition", field + " configuration गलत है।");
+  return value;
+}
 
-/**
- * Authenticated quote only. Does not reserve stock or create an order.
- * Fails closed until the Owner has created privateSettings/main with the documented fields.
- */
-export const quoteCustomerOrder = onCall({ enforceAppCheck: false }, async (request) => {
-  const uid = request.auth?.uid;
-  if (!uid) throw new HttpsError("unauthenticated", "कृपया पहले Customer Login करें।");
+async function buildQuote(itemsInput: unknown, pincodeInput: unknown) {
   let cart;
-  try { cart = parseCart(request.data?.items); } catch (error) { asHttpsError(error); }
-  const pincode = request.data?.pincode;
-  if (typeof pincode !== "string" || !/^[0-9]{6}$/.test(pincode)) {
-    throw new HttpsError("invalid-argument", "6 अंकों का PIN code जरूरी है।");
-  }
-
+  try { cart = parseCart(itemsInput); } catch (error) { asHttpsError(error); }
+  const pincode = cleanText(pincodeInput, "PIN code", 6, 6);
+  if (!/^[0-9]{6}$/.test(pincode)) throw new HttpsError("invalid-argument", "6 अंकों का PIN code जरूरी है।");
   const configSnap = await db.doc("privateSettings/main").get();
-  if (!configSnap.exists) {
-    throw new HttpsError("failed-precondition", "Backend configuration अभी तैयार नहीं है; order quote उपलब्ध नहीं है।");
-  }
+  if (!configSnap.exists) throw new HttpsError("failed-precondition", "Backend configuration अभी तैयार नहीं है।");
   const config = configSnap.data()!;
   if (!Array.isArray(config.serviceablePincodes) || !config.serviceablePincodes.includes(pincode)) {
-    throw new HttpsError("failed-precondition", "यह PIN code अभी delivery service में उपलब्ध नहीं है।");
+    throw new HttpsError("failed-precondition", "यह PIN code delivery service में उपलब्ध नहीं है।");
   }
-  if (!Number.isSafeInteger(config.deliveryFeePaise) || config.deliveryFeePaise < 0 ||
-      !Number.isSafeInteger(config.minimumOrderPaise) || config.minimumOrderPaise < 0) {
-    throw new HttpsError("failed-precondition", "Delivery fee / minimum order की सुरक्षित configuration नहीं मिली।");
-  }
-
+  const deliveryFeePaise = safeMoney(config.deliveryFeePaise, "Delivery fee");
+  const minimumOrderPaise = safeMoney(config.minimumOrderPaise, "Minimum order");
+  const productSnaps = await Promise.all(cart.map(line => db.doc(`products/${line.productId}`).get()));
   let subtotalPaise = 0;
-  const items: Array<{ productId: string; name: string; quantity: number; unitPricePaise: number; lineTotalPaise: number }> = [];
-  for (const line of cart) {
-    const snap = await db.doc(`products/${line.productId}`).get();
+  const items = cart.map((line, index) => {
+    const snap = productSnaps[index];
     if (!snap.exists) throw new HttpsError("not-found", `Product ${line.productId} उपलब्ध नहीं है।`);
     const product = snap.data()!;
     if (product.active !== true) throw new HttpsError("failed-precondition", "Cart में कोई product अभी उपलब्ध नहीं है।");
@@ -62,16 +57,113 @@ export const quoteCustomerOrder = onCall({ enforceAppCheck: false }, async (requ
     if (!Number.isSafeInteger(lineTotalPaise)) throw new HttpsError("invalid-argument", "Order amount सीमा से अधिक है।");
     subtotalPaise += lineTotalPaise;
     if (!Number.isSafeInteger(subtotalPaise)) throw new HttpsError("invalid-argument", "Order amount सीमा से अधिक है।");
-    items.push({ productId: line.productId, name: String(product.name ?? "Product").slice(0, 120), quantity: line.quantity, unitPricePaise, lineTotalPaise });
-  }
-  if (subtotalPaise < config.minimumOrderPaise) throw new HttpsError("failed-precondition", "Minimum order amount पूरा नहीं हुआ।");
+    return { productId: line.productId, name: String(product.name ?? "Product").slice(0, 120), quantity: line.quantity, unitPricePaise, lineTotalPaise };
+  });
+  if (subtotalPaise < minimumOrderPaise) throw new HttpsError("failed-precondition", "Minimum order amount पूरा नहीं हुआ।");
+  return { items, pincode, subtotalPaise, deliveryFeePaise, discountPaise: 0, totalPaise: subtotalPaise + deliveryFeePaise };
+}
 
-  const deliveryFeePaise = config.deliveryFeePaise as number;
-  return { userId: uid, items, subtotalPaise, deliveryFeePaise, discountPaise: 0, totalPaise: subtotalPaise + deliveryFeePaise, currency: "INR", quotedAt: Timestamp.now() };
+export const quoteCustomerOrder = onCall({ enforceAppCheck: false }, async request => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "कृपया पहले Customer Login करें।");
+  const quote = await buildQuote(request.data?.items, request.data?.pincode);
+  return { userId: uid, ...quote, currency: "INR", quotedAt: Timestamp.now() };
 });
 
-/** Owner identity smoke-check for emulator/integration tests; it changes no data. */
-export const verifyOwnerAccess = onCall({ enforceAppCheck: false }, async (request) => {
+export const createCustomerOrder = onCall({ enforceAppCheck: false }, async request => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "कृपया पहले Customer Login करें।");
+  const name = cleanText(request.data?.name, "नाम", 100);
+  const phone = cleanText(request.data?.phone, "मोबाइल नंबर", 20);
+  if (!/^[0-9+() -]{10,20}$/.test(phone)) throw new HttpsError("invalid-argument", "मोबाइल नंबर गलत है।");
+  const address = cleanText(request.data?.address, "पता", 500);
+  const payment = request.data?.payment;
+  if (!["UPI", "Cash on Delivery"].includes(payment)) throw new HttpsError("invalid-argument", "Payment method गलत है।");
+  const note = typeof request.data?.note === "string" ? request.data.note.slice(0, 300) : "";
+  const idempotencyKey = cleanText(request.data?.idempotencyKey, "Idempotency key", 80);
+  if (!/^[A-Za-z0-9_-]{12,80}$/.test(idempotencyKey)) throw new HttpsError("invalid-argument", "Idempotency key गलत है।");
+  const quote = await buildQuote(request.data?.items, request.data?.pincode);
+  const orderRef = db.collection("orders").doc();
+  const idemRef = db.doc(`orderRequests/${uid}_${idempotencyKey}`);
+  return db.runTransaction(async tx => {
+    const prior = await tx.get(idemRef);
+    if (prior.exists) return { orderId: prior.data()!.orderId, reused: true };
+    tx.create(orderRef, {
+      id: orderRef.id, userId: uid, name, phone, address, pincode: quote.pincode,
+      status: "Pending", subtotalPaise: quote.subtotalPaise, deliveryFeePaise: quote.deliveryFeePaise,
+      discountPaise: 0, totalPaise: quote.totalPaise, items: quote.items.map(({ productId, name: productName, quantity }) => ({ productId, name: productName, quantity })),
+      payment, date: Timestamp.now(), note, createdBy: uid
+    });
+    tx.create(idemRef, { orderId: orderRef.id, createdAt: Timestamp.now() });
+    return { orderId: orderRef.id, reused: false };
+  });
+});
+
+export const approveOrder = onCall({ enforceAppCheck: false }, async request => {
+  let ownerUid: string;
+  try { ownerUid = requireOwner(request); } catch (error) { asHttpsError(error); }
+  const orderId = cleanText(request.data?.orderId, "Order ID", 120);
+  const orderRef = db.doc(`orders/${orderId}`);
+  return db.runTransaction(async tx => {
+    const orderSnap = await tx.get(orderRef);
+    if (!orderSnap.exists) throw new HttpsError("not-found", "Order नहीं मिला।");
+    const order = orderSnap.data()!;
+    if (order.status !== "Pending") throw new HttpsError("failed-precondition", "केवल Pending Order approve हो सकता है।");
+    if (!Array.isArray(order.items) || !order.items.length) throw new HttpsError("failed-precondition", "Order items गलत हैं।");
+    const refs = order.items.map((item: any) => db.doc(`products/${item.productId}`));
+    const snaps = await Promise.all(refs.map((ref: FirebaseFirestore.DocumentReference) => tx.get(ref)));
+    const decrements: Array<{ref: FirebaseFirestore.DocumentReference; stock: number}> = [];
+    for (let i = 0; i < order.items.length; i++) {
+      const item = order.items[i], snap = snaps[i];
+      if (!snap.exists || snap.data()!.active !== true) throw new HttpsError("failed-precondition", "Order का कोई product उपलब्ध नहीं है।");
+      const stock = snap.data()!.stock;
+      if (!Number.isSafeInteger(stock) || stock < item.quantity) throw new HttpsError("failed-precondition", "पर्याप्त stock उपलब्ध नहीं है।");
+      decrements.push({ ref: refs[i], stock: stock - item.quantity });
+    }
+    for (const d of decrements) tx.update(d.ref, { stock: d.stock });
+    tx.update(orderRef, { status: "Accepted", approvedAt: Timestamp.now(), approvedBy: ownerUid });
+    tx.create(db.collection("orderAudit").doc(randomUUID()), { orderId, actorUid: ownerUid, action: "Accepted", createdAt: Timestamp.now() });
+    return { orderId, status: "Accepted" };
+  });
+});
+
+export const rejectOrder = onCall({ enforceAppCheck: false }, async request => {
+  let ownerUid: string;
+  try { ownerUid = requireOwner(request); } catch (error) { asHttpsError(error); }
+  const orderId = cleanText(request.data?.orderId, "Order ID", 120);
+  const reason = cleanText(request.data?.reason, "Rejection reason", 200);
+  const ref = db.doc(`orders/${orderId}`);
+  return db.runTransaction(async tx => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "Order नहीं मिला।");
+    if (snap.data()!.status !== "Pending") throw new HttpsError("failed-precondition", "केवल Pending Order reject हो सकता है।");
+    tx.update(ref, { status: "Rejected", rejectionReason: reason, rejectedAt: Timestamp.now(), rejectedBy: ownerUid });
+    tx.create(db.collection("orderAudit").doc(randomUUID()), { orderId, actorUid: ownerUid, action: "Rejected", reason, createdAt: Timestamp.now() });
+    return { orderId, status: "Rejected" };
+  });
+});
+
+const NEXT_STATUS: Record<string, string[]> = {
+  Accepted: ["Preparing"], Preparing: ["Ready"], Ready: ["OutForDelivery"], OutForDelivery: ["Delivered"]
+};
+export const setOrderStatus = onCall({ enforceAppCheck: false }, async request => {
+  let ownerUid: string;
+  try { ownerUid = requireOwner(request); } catch (error) { asHttpsError(error); }
+  const orderId = cleanText(request.data?.orderId, "Order ID", 120);
+  const nextStatus = cleanText(request.data?.status, "Order status", 30);
+  const ref = db.doc(`orders/${orderId}`);
+  return db.runTransaction(async tx => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "Order नहीं मिला।");
+    const current = String(snap.data()!.status);
+    if (!(NEXT_STATUS[current] || []).includes(nextStatus)) throw new HttpsError("failed-precondition", "यह Order status transition मान्य नहीं है।");
+    tx.update(ref, { status: nextStatus, updatedAt: Timestamp.now(), updatedBy: ownerUid });
+    tx.create(db.collection("orderAudit").doc(randomUUID()), { orderId, actorUid: ownerUid, action: nextStatus, createdAt: Timestamp.now() });
+    return { orderId, status: nextStatus };
+  });
+});
+
+export const verifyOwnerAccess = onCall({ enforceAppCheck: false }, async request => {
   let uid: string;
   try { uid = requireOwner(request); } catch (error) { asHttpsError(error); }
   return { authorized: true, uid };
