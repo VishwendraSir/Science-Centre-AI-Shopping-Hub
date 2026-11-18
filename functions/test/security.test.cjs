@@ -20,6 +20,9 @@ test("parseCart rejects malformed product IDs and non-object items", () => {
   errCode(() => parseCart([{ productId: "../users", quantity: 1 }]), "invalid-argument");
   errCode(() => parseCart([{ productId: 12, quantity: 1 }]), "invalid-argument");
 });
+test("parseCart rejects duplicate lines whose combined quantity exceeds 99", () => {
+  errCode(() => parseCart([{ productId: "p1", quantity: 60 }, { productId: "p1", quantity: 40 }]), "invalid-argument");
+});
 test("parseCart rejects string, fractional, zero, negative and >99 quantities", () => {
   for (const quantity of ["2", 1.5, 0, -1, 100, NaN, Infinity]) {
     errCode(() => parseCart([{ productId: "p1", quantity }]), "invalid-argument");
