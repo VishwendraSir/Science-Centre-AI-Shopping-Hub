@@ -27,11 +27,11 @@ async function seed(stock = 10) {
   await configRef.set({ serviceablePincodes: ["282001"], deliveryFeePaise: 2500, minimumOrderPaise: 100 });
   await productRef.set({ name: "Test Product", active: true, pricePaise: 10000, stock });
 }
-async function create(key, quantity = 1, auth = customer) {
+async function create(key, quantity = 1, auth = customer, overrides = {}) {
   const result = await createCustomerOrder.run({ auth, data: {
     name: "Test Customer", phone: "9876543210", address: "Test address",
     payment: "Cash on Delivery", note: "", idempotencyKey: key,
-    pincode: "282001", items: [{ productId: "orders-test-product", quantity }]
+    pincode: "282001", items: [{ productId: "orders-test-product", quantity }], ...overrides
   }});
   orderIds.add(result.orderId);
   idemIds.add(`orderRequests/${auth.uid}_${key}`);
@@ -62,6 +62,17 @@ test("createCustomerOrder enforces auth and creates a server-priced idempotent P
   assert.equal(order.subtotalPaise, 20000);
   assert.equal(order.totalPaise, 22500);
   assert.deepEqual(order.items, [{ productId: "orders-test-product", name: "Test Product", quantity: 2, unitPricePaise: 10000, lineTotalPaise: 20000 }]);
+});
+
+
+test("idempotency key cannot be reused for a different order payload", async () => {
+  await seed();
+  const first = await create("idem-key-payload-01", 1);
+  await expectCode(create("idem-key-payload-01", 2), "already-exists");
+  await expectCode(create("idem-key-payload-01", 1, customer, { address: "Different address" }), "already-exists");
+  const order = (await db.doc(`orders/${first.orderId}`).get()).data();
+  assert.equal(order.items[0].quantity, 1);
+  assert.equal((await db.collection("orders").where("userId", "==", CUSTOMER_UID).get()).size, 1);
 });
 
 test("approveOrder is Owner-only, decrements stock once and writes audit", async () => {
