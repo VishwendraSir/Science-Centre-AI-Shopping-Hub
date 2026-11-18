@@ -2,7 +2,12 @@ import { initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { setGlobalOptions } from "firebase-functions/v2";
-import { parseCart, requireOwner } from "./security";
+import { parseCart, requireOwner, SecurityValidationError } from "./security";
+
+function asHttpsError(error: unknown): never {
+  if (error instanceof SecurityValidationError) throw new HttpsError(error.code as any, error.message);
+  throw error;
+}
 
 initializeApp();
 const db = getFirestore();
@@ -25,7 +30,8 @@ function productPricePaise(data: FirebaseFirestore.DocumentData): number {
 export const quoteCustomerOrder = onCall({ enforceAppCheck: false }, async (request) => {
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("unauthenticated", "कृपया पहले Customer Login करें।");
-  const cart = parseCart(request.data?.items);
+  let cart;
+  try { cart = parseCart(request.data?.items); } catch (error) { asHttpsError(error); }
   const pincode = request.data?.pincode;
   if (typeof pincode !== "string" || !/^[0-9]{6}$/.test(pincode)) {
     throw new HttpsError("invalid-argument", "6 अंकों का PIN code जरूरी है।");
@@ -66,6 +72,7 @@ export const quoteCustomerOrder = onCall({ enforceAppCheck: false }, async (requ
 
 /** Owner identity smoke-check for emulator/integration tests; it changes no data. */
 export const verifyOwnerAccess = onCall({ enforceAppCheck: false }, async (request) => {
-  const uid = requireOwner(request);
+  let uid: string;
+  try { uid = requireOwner(request); } catch (error) { asHttpsError(error); }
   return { authorized: true, uid };
 });
