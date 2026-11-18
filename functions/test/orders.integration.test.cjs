@@ -109,6 +109,25 @@ test("approveOrder is Owner-only, decrements stock once and writes audit", async
   assert.equal(audit.size, 1);
 });
 
+test("approveOrder blocks unverified UPI payment without decrementing stock", async () => {
+  await seed(5);
+  const { orderId } = await create("idem-key-upi-block-01", 1, customer, { payment: "UPI" });
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId } }), "failed-precondition");
+  assert.equal((await productRef.get()).data().stock, 5);
+  const order = (await db.doc(`orders/${orderId}`).get()).data();
+  assert.equal(order.status, "Pending");
+  assert.equal(order.paymentVerified, false);
+});
+
+test("approveOrder blocks tampered aggregate totals without decrementing stock", async () => {
+  await seed(5);
+  const { orderId } = await create("idem-key-total-tamper-01", 2);
+  await db.doc(`orders/${orderId}`).update({ totalPaise: 1 });
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId } }), "failed-precondition");
+  assert.equal((await productRef.get()).data().stock, 5);
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, "Pending");
+});
+
 test("approveOrder blocks stale price snapshots without decrementing stock", async () => {
   await seed(5);
   const { orderId } = await create("idem-key-price-01", 2);
