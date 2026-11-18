@@ -84,7 +84,7 @@ export const createCustomerOrder = onCall({ enforceAppCheck: false }, async requ
   const note = typeof request.data?.note === "string" ? request.data.note.slice(0, 300) : "";
   const idempotencyKey = cleanText(request.data?.idempotencyKey, "Idempotency key", 80);
   if (!/^[A-Za-z0-9_-]{12,80}$/.test(idempotencyKey)) throw new HttpsError("invalid-argument", "Idempotency key गलत है।");
-  let normalizedCart;
+  let normalizedCart: ReturnType<typeof parseCart>;
   try { normalizedCart = parseCart(request.data?.items); } catch (error) { asHttpsError(error); }
   const pincode = cleanText(request.data?.pincode, "PIN code", 6, 6);
   // Fingerprint the customer's normalized intent, not a mutable product price or availability snapshot.
