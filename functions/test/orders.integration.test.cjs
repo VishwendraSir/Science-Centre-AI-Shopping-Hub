@@ -109,6 +109,29 @@ test("approveOrder is Owner-only, decrements stock once and writes audit", async
   assert.equal(audit.size, 1);
 });
 
+test("approveOrder rejects invalid legacy payment methods and COD payment states", async () => {
+  await seed(5);
+  const invalidMethod = db.collection("orders").doc("invalid-payment-method-order");
+  await invalidMethod.set({
+    id: invalidMethod.id, userId: CUSTOMER_UID, status: "Pending",
+    payment: "Bank Transfer", paymentStatus: "Pending", paymentVerified: false,
+    subtotalPaise: 10000, deliveryFeePaise: 2500, discountPaise: 0, totalPaise: 12500,
+    items: [{ productId: "orders-test-product", name: "Test Product", quantity: 1, unitPricePaise: 10000, lineTotalPaise: 10000 }]
+  });
+  orderIds.add(invalidMethod.id);
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId: invalidMethod.id } }), "failed-precondition");
+  const invalidCod = db.collection("orders").doc("invalid-cod-state-order");
+  await invalidCod.set({
+    id: invalidCod.id, userId: CUSTOMER_UID, status: "Pending",
+    payment: "Cash on Delivery", paymentStatus: "Paid", paymentVerified: true,
+    subtotalPaise: 10000, deliveryFeePaise: 2500, discountPaise: 0, totalPaise: 12500,
+    items: [{ productId: "orders-test-product", name: "Test Product", quantity: 1, unitPricePaise: 10000, lineTotalPaise: 10000 }]
+  });
+  orderIds.add(invalidCod.id);
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId: invalidCod.id } }), "failed-precondition");
+  assert.equal((await productRef.get()).data().stock, 5);
+});
+
 test("approveOrder blocks unverified UPI payment without decrementing stock", async () => {
   await seed(5);
   const { orderId } = await create("idem-key-upi-block-01", 1, customer, { payment: "UPI" });
