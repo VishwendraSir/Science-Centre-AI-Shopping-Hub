@@ -137,12 +137,20 @@ export const approveOrder = onCall({ enforceAppCheck: false }, async request => 
     if (!orderSnap.exists) throw new HttpsError("not-found", "Order नहीं मिला।");
     const order = orderSnap.data()!;
     if (order.status !== "Pending") throw new HttpsError("failed-precondition", "केवल Pending Order approve हो सकता है।");
+    if (order.payment === "UPI" && !(order.paymentVerified === true && order.paymentStatus === "Verified")) {
+      throw new HttpsError("failed-precondition", "Trusted payment provider से UPI payment verify होने तक Order approve नहीं हो सकता।");
+    }
     let approvedItems;
     try { approvedItems = parseCart(order.items); }
     catch { throw new HttpsError("failed-precondition", "Order items गलत हैं; approval रोक दिया गया।"); }
+    if (!Array.isArray(order.items) || order.items.length !== approvedItems.length
+      || new Set(order.items.map((line: any) => line?.productId)).size !== order.items.length) {
+      throw new HttpsError("failed-precondition", "Order में duplicate या inconsistent items हैं; approval रोक दिया गया।");
+    }
     const refs = approvedItems.map((item: { productId: string; quantity: number }) => db.doc(`products/${item.productId}`));
     const snaps = await Promise.all(refs.map((ref: FirebaseFirestore.DocumentReference) => tx.get(ref)));
     const decrements: Array<{ref: FirebaseFirestore.DocumentReference; stock: number}> = [];
+    let recomputedSubtotalPaise = 0;
     for (let i = 0; i < approvedItems.length; i++) {
       const item = approvedItems[i], snap = snaps[i];
       if (!snap.exists || snap.data()!.active !== true) throw new HttpsError("failed-precondition", "Order का कोई product उपलब्ध नहीं है।");
@@ -152,11 +160,25 @@ export const approveOrder = onCall({ enforceAppCheck: false }, async request => 
       const storedItem = order.items.find((line: any) => line.productId === item.productId);
       if (!storedItem || !Number.isSafeInteger(storedItem.unitPricePaise) || !Number.isSafeInteger(storedItem.lineTotalPaise)
         || storedItem.unitPricePaise !== unitPricePaise
-        || storedItem.lineTotalPaise !== unitPricePaise * item.quantity) {
+        || storedItem.lineTotalPaise !== unitPricePaise * item.quantity
+        || storedItem.quantity !== item.quantity) {
         throw new HttpsError("failed-precondition", "Product की कीमत बदल गई है या Order price snapshot गलत है; दोबारा Quote बनाएं।");
       }
+      recomputedSubtotalPaise += storedItem.lineTotalPaise;
+      if (!Number.isSafeInteger(recomputedSubtotalPaise)) throw new HttpsError("failed-precondition", "Order subtotal गलत है।");
       if (!Number.isSafeInteger(stock) || stock < item.quantity) throw new HttpsError("failed-precondition", "पर्याप्त stock उपलब्ध नहीं है।");
       decrements.push({ ref: refs[i], stock: stock - item.quantity });
+    }
+    const deliveryFeePaise = order.deliveryFeePaise;
+    const discountPaise = order.discountPaise;
+    const totalPaise = order.totalPaise;
+    if (!Number.isSafeInteger(order.subtotalPaise) || order.subtotalPaise !== recomputedSubtotalPaise
+      || !Number.isSafeInteger(deliveryFeePaise) || deliveryFeePaise < 0
+      || discountPaise !== 0
+      || !Number.isSafeInteger(totalPaise)
+      || totalPaise !== recomputedSubtotalPaise + deliveryFeePaise - discountPaise
+      || !Number.isSafeInteger(totalPaise) || totalPaise < 0) {
+      throw new HttpsError("failed-precondition", "Order का कुल मूल्य snapshot गलत है; approval रोक दिया गया।");
     }
     for (const d of decrements) tx.update(d.ref, { stock: d.stock });
     tx.update(orderRef, { status: "Accepted", approvedAt: Timestamp.now(), approvedBy: ownerUid });
