@@ -7,7 +7,7 @@ const assert = require("node:assert/strict");
 const { getFirestore } = require("firebase-admin/firestore");
 const { HttpsError } = require("firebase-functions/v2/https");
 const {
-  createCustomerOrder, approveOrder, rejectOrder, setOrderStatus
+  createCustomerOrder, approveOrder, rejectOrder, setOrderStatus, setProductStock
 } = require("../lib/index.js");
 
 const db = getFirestore();
@@ -130,6 +130,22 @@ test("approveOrder rejects malformed legacy quantities without changing stock", 
   await expectCode(approveOrder.run({ auth: owner, data: { orderId: ref.id } }), "failed-precondition");
   assert.equal((await productRef.get()).data().stock, 5);
   assert.equal((await ref.get()).data().status, "Pending");
+});
+
+
+test("setProductStock is Owner-only, validates bounds and writes audit", async () => {
+  await seed(5);
+  await expectCode(setProductStock.run({ auth: customer, data: { productId: "orders-test-product", stock: 9 } }), "permission-denied");
+  await expectCode(setProductStock.run({ auth: owner, data: { productId: "orders-test-product", stock: -1 } }), "invalid-argument");
+  await expectCode(setProductStock.run({ auth: owner, data: { productId: "orders-test-product", stock: 1.5 } }), "invalid-argument");
+  await expectCode(setProductStock.run({ auth: owner, data: { productId: "orders-test-product", stock: 1000001 } }), "invalid-argument");
+  const result = await setProductStock.run({ auth: owner, data: { productId: "orders-test-product", stock: 27 } });
+  assert.deepEqual(result, { productId: "orders-test-product", stock: 27 });
+  assert.equal((await productRef.get()).data().stock, 27);
+  const audit = await db.collection("orderAudit").where("productId", "==", "orders-test-product").get();
+  assert.equal(audit.size, 1);
+  assert.equal(audit.docs[0].data().action, "StockUpdated");
+  assert.equal(audit.docs[0].data().stock, 27);
 });
 
 test.after(async () => {
