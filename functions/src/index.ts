@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { setGlobalOptions } from "firebase-functions/v2";
 import { parseCart, requireOwner, SecurityValidationError } from "./security";
@@ -85,18 +85,31 @@ export const createCustomerOrder = onCall({ enforceAppCheck: false }, async requ
   const idempotencyKey = cleanText(request.data?.idempotencyKey, "Idempotency key", 80);
   if (!/^[A-Za-z0-9_-]{12,80}$/.test(idempotencyKey)) throw new HttpsError("invalid-argument", "Idempotency key गलत है।");
   const quote = await buildQuote(request.data?.items, request.data?.pincode);
+  // Bind an idempotency key to the complete normalized order intent, not merely to a UID.
+  const fingerprintPayload = {
+    uid, name, phone, address, payment, note, pincode: quote.pincode,
+    items: quote.items.map(({ productId, quantity, unitPricePaise }) => ({ productId, quantity, unitPricePaise }))
+      .sort((a, b) => a.productId.localeCompare(b.productId))
+  };
+  const requestFingerprint = createHash("sha256").update(JSON.stringify(fingerprintPayload)).digest("hex");
   const orderRef = db.collection("orders").doc();
   const idemRef = db.doc(`orderRequests/${uid}_${idempotencyKey}`);
   return db.runTransaction(async tx => {
     const prior = await tx.get(idemRef);
-    if (prior.exists) return { orderId: prior.data()!.orderId, reused: true };
+    if (prior.exists) {
+      const priorData = prior.data()!;
+      if (priorData.requestFingerprint !== requestFingerprint) {
+        throw new HttpsError("already-exists", "यह Idempotency key किसी दूसरे Order request के लिए उपयोग हो चुकी है। नया key बनाकर दोबारा प्रयास करें।");
+      }
+      return { orderId: priorData.orderId, reused: true };
+    }
     tx.create(orderRef, {
       id: orderRef.id, userId: uid, name, phone, address, pincode: quote.pincode,
       status: "Pending", subtotalPaise: quote.subtotalPaise, deliveryFeePaise: quote.deliveryFeePaise,
       discountPaise: 0, totalPaise: quote.totalPaise, items: quote.items.map(({ productId, name: productName, quantity, unitPricePaise, lineTotalPaise }) => ({ productId, name: productName, quantity, unitPricePaise, lineTotalPaise })),
       payment, date: Timestamp.now(), note, createdBy: uid
     });
-    tx.create(idemRef, { orderId: orderRef.id, createdAt: Timestamp.now() });
+    tx.create(idemRef, { orderId: orderRef.id, requestFingerprint, createdAt: Timestamp.now() });
     return { orderId: orderRef.id, reused: false };
   });
 });
