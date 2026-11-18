@@ -33,10 +33,10 @@ function parseCart(value: unknown): CartLine[] {
     if (typeof item.productId !== "string" || !/^[A-Za-z0-9_-]{1,120}$/.test(item.productId)) {
       throw new HttpsError("invalid-argument", "Product ID गलत है।");
     }
-    if (!Number.isSafeInteger(item.quantity) || (item.quantity as number) < 1 || (item.quantity as number) > 99) {
+    if (typeof item.quantity !== "number" || !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 99) {
       throw new HttpsError("invalid-argument", "Quantity 1 से 99 के बीच पूर्ण संख्या होनी चाहिए।");
     }
-    merged.set(item.productId, (merged.get(item.productId) ?? 0) + (item.quantity as number));
+    merged.set(item.productId, (merged.get(item.productId) ?? 0) + item.quantity);
   }
   return [...merged].map(([productId, quantity]) => ({ productId, quantity }));
 }
