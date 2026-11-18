@@ -22,6 +22,7 @@ before(async () => {
   await setDoc(doc(db,"users/customerA"),{uid:"customerA",name:"A"});
   await setDoc(doc(db,"users/customerB"),{uid:"customerB",name:"B"});
   await setDoc(doc(db,"orders/orderA"),order("customerA"));
+  await setDoc(doc(db,"products/p1"),{name:"Item",price:100,stock:10,active:true});
   await setDoc(doc(db,"sellerProducts/spA"),{sellerUid:"sellerA",name:"A"});
   await setDoc(doc(db,"suborders/soA"),{sellerUid:"sellerA",status:"New"});
   await setDoc(doc(db,"riderTasks/rtA"),{assignedRiderUid:"riderA",deliveryStatus:"Assigned"});
