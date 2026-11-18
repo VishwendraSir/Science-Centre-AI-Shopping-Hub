@@ -61,7 +61,7 @@ test("createCustomerOrder enforces auth and creates a server-priced idempotent P
   assert.equal(order.userId, CUSTOMER_UID);
   assert.equal(order.subtotalPaise, 20000);
   assert.equal(order.totalPaise, 22500);
-  assert.deepEqual(order.items, [{ productId: "orders-test-product", name: "Test Product", quantity: 2 }]);
+  assert.deepEqual(order.items, [{ productId: "orders-test-product", name: "Test Product", quantity: 2, unitPricePaise: 10000, lineTotalPaise: 20000 }]);
 });
 
 test("approveOrder is Owner-only, decrements stock once and writes audit", async () => {
@@ -75,6 +75,15 @@ test("approveOrder is Owner-only, decrements stock once and writes audit", async
   assert.equal((await productRef.get()).data().stock, 3);
   const audit = await db.collection("orderAudit").where("orderId", "==", orderId).get();
   assert.equal(audit.size, 1);
+});
+
+test("approveOrder blocks stale price snapshots without decrementing stock", async () => {
+  await seed(5);
+  const { orderId } = await create("idem-key-price-01", 2);
+  await productRef.update({ pricePaise: 12000 });
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId } }), "failed-precondition");
+  assert.equal((await productRef.get()).data().stock, 5);
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, "Pending");
 });
 
 test("concurrent approvals cannot oversell the same stock", async () => {
