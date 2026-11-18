@@ -18,3 +18,10 @@ This branch is isolated from production. These rules are a proposed security bas
 
 ## Deployment gate
 Do NOT deploy these rules or migrate production data until all emulator tests pass, the actual app schema is reconciled, backend functions are tested, and the owner explicitly approves deployment.
+
+
+## सत्यापित Emulator परिणाम (18 नवम्बर 2026)
+
+GitHub Actions Firestore Emulator run में 18/18 परीक्षण सफल रहे (Mocha: `18 passing`, exit code 0)। यह केवल प्रस्तावित Rules baseline के authorization tests की सफलता है; इसे production readiness या live app integration की स्वीकृति न माना जाए।
+
+अभी भी आवश्यक: app के वास्तविक Firestore schema से मिलान, seller/rider/wholesaler/support flows का integration, backend/Admin SDK के माध्यम से price/stock/coupon/payment/order approval की transaction सुरक्षा, और वास्तविक query/list isolation परीक्षण। इन जाँचों और स्पष्ट अनुमति के बिना Rules deploy, database migration या PR merge न करें।
