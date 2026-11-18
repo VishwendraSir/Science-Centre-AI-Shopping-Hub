@@ -175,6 +175,27 @@ export const setOrderStatus = onCall({ enforceAppCheck: false }, async request =
   });
 });
 
+
+export const setProductStock = onCall({ enforceAppCheck: false }, async request => {
+  let ownerUid: string;
+  try { ownerUid = requireOwner(request); } catch (error) { asHttpsError(error); }
+  const productId = cleanText(request.data?.productId, "Product ID", 120);
+  const stock = request.data?.stock;
+  if (!Number.isSafeInteger(stock) || stock < 0 || stock > 1000000) {
+    throw new HttpsError("invalid-argument", "Stock 0 से 1,000,000 के बीच पूर्णांक होना चाहिए।");
+  }
+  const ref = db.doc(`products/${productId}`);
+  return db.runTransaction(async tx => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new HttpsError("not-found", "Product नहीं मिला।");
+    tx.update(ref, { stock, stockUpdatedAt: Timestamp.now(), stockUpdatedBy: ownerUid });
+    tx.create(db.collection("orderAudit").doc(randomUUID()), {
+      productId, actorUid: ownerUid, action: "StockUpdated", stock, createdAt: Timestamp.now()
+    });
+    return { productId, stock };
+  });
+});
+
 export const verifyOwnerAccess = onCall({ enforceAppCheck: false }, async request => {
   let uid: string;
   try { uid = requireOwner(request); } catch (error) { asHttpsError(error); }
