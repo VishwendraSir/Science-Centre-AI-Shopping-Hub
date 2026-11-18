@@ -25,3 +25,10 @@ Do NOT deploy these rules or migrate production data until all emulator tests pa
 GitHub Actions Firestore Emulator run में 18/18 परीक्षण सफल रहे (Mocha: `18 passing`, exit code 0)। यह केवल प्रस्तावित Rules baseline के authorization tests की सफलता है; इसे production readiness या live app integration की स्वीकृति न माना जाए।
 
 अभी भी आवश्यक: app के वास्तविक Firestore schema से मिलान, seller/rider/wholesaler/support flows का integration, backend/Admin SDK के माध्यम से price/stock/coupon/payment/order approval की transaction सुरक्षा, और वास्तविक query/list isolation परीक्षण। इन जाँचों और स्पष्ट अनुमति के बिना Rules deploy, database migration या PR merge न करें।
+
+
+## Query isolation retest — 19 नवम्बर 2026
+
+नए CI Emulator run में Tests 1–18 फिर से सफल रहे (`18 passing`, exit code 0)। Tests 10–13 अब दूसरे मालिक के वास्तविक seeded documents के विरुद्ध cross-owner get और filtered/unfiltered list query व्यवहार भी जाँचते हैं। बिना owner filter वाली Seller, Rider, Wholesaler और Support list queries असफल तथा सही UID filter वाली queries सफल रहीं। Fake `admin` custom claim को भी Owner access नहीं मिला।
+
+यह अभी भी केवल Firestore Rules Emulator suite है। यह live app compatibility, trusted backend, payment verification, pricing integrity या production deployment को प्रमाणित नहीं करता।
