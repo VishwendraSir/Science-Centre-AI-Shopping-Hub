@@ -2,44 +2,11 @@ import { initializeApp } from "firebase-admin/app";
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { setGlobalOptions } from "firebase-functions/v2";
+import { parseCart, requireOwner } from "./security";
 
 initializeApp();
 const db = getFirestore();
 setGlobalOptions({ region: "asia-south1", maxInstances: 5 });
-
-const OWNER_UID = "oGx22qVkoeOboM1bNAgIdKTqXY12";
-
-type CartLine = { productId: string; quantity: number };
-
-function requireSignedIn(request: { auth?: { uid: string } | null }): string {
-  if (!request.auth?.uid) throw new HttpsError("unauthenticated", "कृपया पहले Customer Login करें।");
-  return request.auth.uid;
-}
-
-export function requireOwner(request: { auth?: { uid: string; token: Record<string, unknown> } | null }): string {
-  const uid = requireSignedIn(request);
-  if (uid !== OWNER_UID) throw new HttpsError("permission-denied", "यह कार्य केवल अधिकृत Owner कर सकता है।");
-  return uid;
-}
-
-export function parseCart(value: unknown): CartLine[] {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 50) {
-    throw new HttpsError("invalid-argument", "Cart में 1 से 50 items होने चाहिए।");
-  }
-  const merged = new Map<string, number>();
-  for (const raw of value) {
-    if (!raw || typeof raw !== "object") throw new HttpsError("invalid-argument", "Cart item गलत है।");
-    const item = raw as Record<string, unknown>;
-    if (typeof item.productId !== "string" || !/^[A-Za-z0-9_-]{1,120}$/.test(item.productId)) {
-      throw new HttpsError("invalid-argument", "Product ID गलत है।");
-    }
-    if (typeof item.quantity !== "number" || !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 99) {
-      throw new HttpsError("invalid-argument", "Quantity 1 से 99 के बीच पूर्ण संख्या होनी चाहिए।");
-    }
-    merged.set(item.productId, (merged.get(item.productId) ?? 0) + item.quantity);
-  }
-  return [...merged].map(([productId, quantity]) => ({ productId, quantity }));
-}
 
 function productPricePaise(data: FirebaseFirestore.DocumentData): number {
   if (Number.isSafeInteger(data.pricePaise) && data.pricePaise > 0) return data.pricePaise;
@@ -56,7 +23,8 @@ function productPricePaise(data: FirebaseFirestore.DocumentData): number {
  * Fails closed until the Owner has created privateSettings/main with the documented fields.
  */
 export const quoteCustomerOrder = onCall({ enforceAppCheck: false }, async (request) => {
-  const uid = requireSignedIn(request);
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "कृपया पहले Customer Login करें।");
   const cart = parseCart(request.data?.items);
   const pincode = request.data?.pincode;
   if (typeof pincode !== "string" || !/^[0-9]{6}$/.test(pincode)) {
