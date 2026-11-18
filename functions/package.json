@@ -9,7 +9,7 @@
     "build": "tsc",
     "build:watch": "tsc --watch",
     "test": "npm run build && node --test test/security.test.cjs",
-    "test:emulator": "npm run build && node --test test/*.integration.test.cjs"
+    "test:emulator": "npm run build && node --test --test-concurrency=1 test/*.integration.test.cjs"
   },
   "dependencies": {
     "firebase-admin": "^13.0.0",
