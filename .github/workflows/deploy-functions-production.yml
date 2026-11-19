@@ -1,0 +1,41 @@
+name: Deploy Apna Basket Functions (Production)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type DEPLOY_FUNCTIONS to confirm production Functions deployment"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-functions:
+    if: ${{ inputs.confirmation == 'DEPLOY_FUNCTIONS' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout deployment branch
+        uses: actions/checkout@v4
+        with:
+          ref: security/emulator-18-rules
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Firebase CLI
+        run: npm install --global firebase-tools
+
+      - name: Configure service account
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_APNA_BASKET }}
+        run: |
+          test -n "$FIREBASE_SERVICE_ACCOUNT"
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/firebase-service-account.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/firebase-service-account.json" >> "$GITHUB_ENV"
+
+      - name: Deploy Functions only
+        run: firebase deploy --only functions --project apna-basket-3433e --non-interactive
