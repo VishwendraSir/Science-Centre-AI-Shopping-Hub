@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   deploy-functions:
@@ -26,13 +27,19 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Authenticate to Google Cloud
+      - name: Authenticate to Google Cloud with Workload Identity Federation
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_APNA_BASKET }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.FIREBASE_DEPLOY_SERVICE_ACCOUNT }}
 
       - name: Install Firebase CLI
         run: npm install --global firebase-tools
 
-      - name: Deploy Functions only
-        run: firebase deploy --only functions --project apna-basket-3433e --non-interactive
+      - name: Build and deploy Functions only
+        run: |
+          cd functions
+          npm ci
+          npm run build
+          cd ..
+          firebase deploy --only functions --project apna-basket-3433e --non-interactive
