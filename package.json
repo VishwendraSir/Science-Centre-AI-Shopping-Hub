@@ -1,0 +1,15 @@
+{
+  "name": "apna-basket-firestore-emulator-tests",
+  "private": true,
+  "scripts": {
+    "test:rules": "firebase emulators:exec --only firestore \"npm run test:rules:local\"",
+    "test:rules:local": "mocha --timeout 10000 test/firestore.rules.test.js",
+    "test:functions:emulator": "firebase emulators:exec --only firestore \"npm --prefix functions run test:emulator\""
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^11.0.0",
+    "firebase-tools": "^13.29.0",
+    "mocha": "^10.8.2"
+  }
+}

@@ -1,0 +1,228 @@
+process.env.GCLOUD_PROJECT = process.env.GCLOUD_PROJECT || "apna-basket-emulator";
+process.env.FIREBASE_CONFIG = process.env.FIREBASE_CONFIG || JSON.stringify({ projectId: process.env.GCLOUD_PROJECT });
+process.env.FIRESTORE_EMULATOR_HOST = process.env.FIRESTORE_EMULATOR_HOST || "127.0.0.1:8080";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { getFirestore } = require("firebase-admin/firestore");
+const { HttpsError } = require("firebase-functions/v2/https");
+const {
+  createCustomerOrder, approveOrder, rejectOrder, setOrderStatus, setProductStock
+} = require("../lib/index.js");
+
+const db = getFirestore();
+const OWNER_UID = "oGx22qVkoeOboM1bNAgIdKTqXY12";
+const CUSTOMER_UID = "orders-emulator-customer";
+const productRef = db.doc("products/orders-test-product");
+const configRef = db.doc("privateSettings/main");
+const owner = { uid: OWNER_UID, token: {} };
+const customer = { uid: CUSTOMER_UID, token: {} };
+const orderIds = new Set();
+const idemIds = new Set();
+
+function expectCode(promise, code) {
+  return assert.rejects(promise, error => error instanceof HttpsError && error.code === code);
+}
+async function seed(stock = 10) {
+  await configRef.set({ serviceablePincodes: ["282001"], deliveryFeePaise: 2500, minimumOrderPaise: 100 });
+  await productRef.set({ name: "Test Product", active: true, pricePaise: 10000, stock });
+}
+async function create(key, quantity = 1, auth = customer, overrides = {}) {
+  const result = await createCustomerOrder.run({ auth, data: {
+    name: "Test Customer", phone: "9876543210", address: "Test address",
+    payment: "Cash on Delivery", note: "", idempotencyKey: key,
+    pincode: "282001", items: [{ productId: "orders-test-product", quantity }], ...overrides
+  }});
+  orderIds.add(result.orderId);
+  idemIds.add(`orderRequests/${auth.uid}_${key}`);
+  return result;
+}
+async function cleanup() {
+  const refs = [
+    configRef, productRef,
+    ...[...orderIds].map(id => db.doc(`orders/${id}`)),
+    ...[...idemIds].map(path => db.doc(path))
+  ];
+  const audits = await db.collection("orderAudit").where("orderId", "in", [...orderIds].slice(0, 10)).get().catch(() => null);
+  if (audits) for (const doc of audits.docs) refs.push(doc.ref);
+  await Promise.all(refs.map(ref => ref.delete().catch(() => {})));
+}
+
+test("createCustomerOrder enforces auth and creates a server-priced idempotent Pending order", async () => {
+  await seed();
+  await expectCode(createCustomerOrder.run({ auth: null, data: {} }), "unauthenticated");
+  const first = await create("idem-key-0001", 2);
+  const second = await create("idem-key-0001", 2);
+  assert.equal(first.reused, false);
+  assert.equal(second.reused, true);
+  assert.equal(first.orderId, second.orderId);
+  const order = (await db.doc(`orders/${first.orderId}`).get()).data();
+  assert.equal(order.status, "Pending");
+  assert.equal(order.userId, CUSTOMER_UID);
+  assert.equal(order.subtotalPaise, 20000);
+  assert.equal(order.totalPaise, 22500);
+  assert.equal(order.paymentStatus, "PendingCollection");
+  assert.equal(order.paymentVerified, false);
+  assert.deepEqual(order.items, [{ productId: "orders-test-product", name: "Test Product", quantity: 2, unitPricePaise: 10000, lineTotalPaise: 20000 }]);
+});
+
+
+
+
+test("UPI order is explicitly unverified until trusted payment verification exists", async () => {
+  await seed();
+  const result = await create("idem-key-upi-0001", 1, customer, { payment: "UPI" });
+  const order = (await db.doc(`orders/${result.orderId}`).get()).data();
+  assert.equal(order.payment, "UPI");
+  assert.equal(order.paymentStatus, "Unverified");
+  assert.equal(order.paymentVerified, false);
+});
+
+test("same idempotency request returns original order even after product changes", async () => {
+  await seed();
+  const first = await create("idem-key-stable-001", 1);
+  await productRef.update({ active: false, pricePaise: 15000 });
+  const retry = await create("idem-key-stable-001", 1);
+  assert.equal(retry.reused, true);
+  assert.equal(retry.orderId, first.orderId);
+});
+
+test("idempotency key cannot be reused for a different order payload", async () => {
+  await seed();
+  const first = await create("idem-key-payload-01", 1);
+  await expectCode(create("idem-key-payload-01", 2), "already-exists");
+  await expectCode(create("idem-key-payload-01", 1, customer, { address: "Different address" }), "already-exists");
+  const order = (await db.doc(`orders/${first.orderId}`).get()).data();
+  assert.equal(order.items[0].quantity, 1);
+});
+
+test("approveOrder is Owner-only, decrements stock once and writes audit", async () => {
+  await seed(5);
+  const { orderId } = await create("idem-key-0002", 2);
+  await expectCode(approveOrder.run({ auth: customer, data: { orderId } }), "permission-denied");
+  const result = await approveOrder.run({ auth: owner, data: { orderId } });
+  assert.equal(result.status, "Accepted");
+  assert.equal((await productRef.get()).data().stock, 3);
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId } }), "failed-precondition");
+  assert.equal((await productRef.get()).data().stock, 3);
+  const audit = await db.collection("orderAudit").where("orderId", "==", orderId).get();
+  assert.equal(audit.size, 1);
+});
+
+test("approveOrder rejects invalid legacy payment methods and COD payment states", async () => {
+  await seed(5);
+  const invalidMethod = db.collection("orders").doc("invalid-payment-method-order");
+  await invalidMethod.set({
+    id: invalidMethod.id, userId: CUSTOMER_UID, status: "Pending",
+    payment: "Bank Transfer", paymentStatus: "Pending", paymentVerified: false,
+    subtotalPaise: 10000, deliveryFeePaise: 2500, discountPaise: 0, totalPaise: 12500,
+    items: [{ productId: "orders-test-product", name: "Test Product", quantity: 1, unitPricePaise: 10000, lineTotalPaise: 10000 }]
+  });
+  orderIds.add(invalidMethod.id);
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId: invalidMethod.id } }), "failed-precondition");
+  const invalidCod = db.collection("orders").doc("invalid-cod-state-order");
+  await invalidCod.set({
+    id: invalidCod.id, userId: CUSTOMER_UID, status: "Pending",
+    payment: "Cash on Delivery", paymentStatus: "Paid", paymentVerified: true,
+    subtotalPaise: 10000, deliveryFeePaise: 2500, discountPaise: 0, totalPaise: 12500,
+    items: [{ productId: "orders-test-product", name: "Test Product", quantity: 1, unitPricePaise: 10000, lineTotalPaise: 10000 }]
+  });
+  orderIds.add(invalidCod.id);
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId: invalidCod.id } }), "failed-precondition");
+  assert.equal((await productRef.get()).data().stock, 5);
+});
+
+test("approveOrder blocks unverified UPI payment without decrementing stock", async () => {
+  await seed(5);
+  const { orderId } = await create("idem-key-upi-block-01", 1, customer, { payment: "UPI" });
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId } }), "failed-precondition");
+  assert.equal((await productRef.get()).data().stock, 5);
+  const order = (await db.doc(`orders/${orderId}`).get()).data();
+  assert.equal(order.status, "Pending");
+  assert.equal(order.paymentVerified, false);
+});
+
+test("approveOrder blocks tampered aggregate totals without decrementing stock", async () => {
+  await seed(5);
+  const { orderId } = await create("idem-key-total-tamper-01", 2);
+  await db.doc(`orders/${orderId}`).update({ totalPaise: 1 });
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId } }), "failed-precondition");
+  assert.equal((await productRef.get()).data().stock, 5);
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, "Pending");
+});
+
+test("approveOrder blocks stale price snapshots without decrementing stock", async () => {
+  await seed(5);
+  const { orderId } = await create("idem-key-price-01", 2);
+  await productRef.update({ pricePaise: 12000 });
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId } }), "failed-precondition");
+  assert.equal((await productRef.get()).data().stock, 5);
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, "Pending");
+});
+
+test("concurrent approvals cannot oversell the same stock", async () => {
+  await seed(1);
+  const a = await create("idem-key-0003", 1);
+  const b = await create("idem-key-0004", 1);
+  const results = await Promise.allSettled([
+    approveOrder.run({ auth: owner, data: { orderId: a.orderId } }),
+    approveOrder.run({ auth: owner, data: { orderId: b.orderId } })
+  ]);
+  assert.equal(results.filter(x => x.status === "fulfilled").length, 1);
+  assert.equal(results.filter(x => x.status === "rejected").length, 1);
+  assert.equal((await productRef.get()).data().stock, 0);
+  const statuses = await Promise.all([a.orderId, b.orderId].map(async id => (await db.doc(`orders/${id}`).get()).data().status));
+  assert.equal(statuses.filter(x => x === "Accepted").length, 1);
+});
+
+test("rejectOrder and setOrderStatus enforce Owner and legal transitions", async () => {
+  await seed(5);
+  const rejected = await create("idem-key-0005", 1);
+  await expectCode(rejectOrder.run({ auth: customer, data: { orderId: rejected.orderId, reason: "No" } }), "permission-denied");
+  assert.equal((await rejectOrder.run({ auth: owner, data: { orderId: rejected.orderId, reason: "Out of service" } })).status, "Rejected");
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId: rejected.orderId } }), "failed-precondition");
+
+  const accepted = await create("idem-key-0006", 1);
+  await approveOrder.run({ auth: owner, data: { orderId: accepted.orderId } });
+  await expectCode(setOrderStatus.run({ auth: owner, data: { orderId: accepted.orderId, status: "Delivered" } }), "failed-precondition");
+  assert.equal((await setOrderStatus.run({ auth: owner, data: { orderId: accepted.orderId, status: "Preparing" } })).status, "Preparing");
+  assert.equal((await setOrderStatus.run({ auth: owner, data: { orderId: accepted.orderId, status: "Ready" } })).status, "Ready");
+  assert.equal((await setOrderStatus.run({ auth: owner, data: { orderId: accepted.orderId, status: "OutForDelivery" } })).status, "OutForDelivery");
+  assert.equal((await setOrderStatus.run({ auth: owner, data: { orderId: accepted.orderId, status: "Delivered" } })).status, "Delivered");
+  await expectCode(setOrderStatus.run({ auth: owner, data: { orderId: accepted.orderId, status: "Preparing" } }), "failed-precondition");
+});
+
+
+test("approveOrder rejects malformed legacy quantities without changing stock", async () => {
+  await seed(5);
+  const ref = db.collection("orders").doc("malformed-legacy-order");
+  await ref.set({
+    id: ref.id, userId: CUSTOMER_UID, status: "Pending",
+    items: [{ productId: "orders-test-product", quantity: -2 }]
+  });
+  orderIds.add(ref.id);
+  await expectCode(approveOrder.run({ auth: owner, data: { orderId: ref.id } }), "failed-precondition");
+  assert.equal((await productRef.get()).data().stock, 5);
+  assert.equal((await ref.get()).data().status, "Pending");
+});
+
+
+test("setProductStock is Owner-only, validates bounds and writes audit", async () => {
+  await seed(5);
+  await expectCode(setProductStock.run({ auth: customer, data: { productId: "orders-test-product", stock: 9 } }), "permission-denied");
+  await expectCode(setProductStock.run({ auth: owner, data: { productId: "orders-test-product", stock: -1 } }), "invalid-argument");
+  await expectCode(setProductStock.run({ auth: owner, data: { productId: "orders-test-product", stock: 1.5 } }), "invalid-argument");
+  await expectCode(setProductStock.run({ auth: owner, data: { productId: "orders-test-product", stock: 1000001 } }), "invalid-argument");
+  const result = await setProductStock.run({ auth: owner, data: { productId: "orders-test-product", stock: 27 } });
+  assert.deepEqual(result, { productId: "orders-test-product", stock: 27 });
+  assert.equal((await productRef.get()).data().stock, 27);
+  const audit = await db.collection("orderAudit").where("productId", "==", "orders-test-product").get();
+  assert.equal(audit.size, 1);
+  assert.equal(audit.docs[0].data().action, "StockUpdated");
+  assert.equal(audit.docs[0].data().stock, 27);
+});
+
+test.after(async () => {
+  await cleanup();
+  await db.terminate();
+});
